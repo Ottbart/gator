@@ -31,7 +31,7 @@ func (config *Config) SetUser(user_name string) error {
 	return os.WriteFile(config_path, config_json, 0o600)
 }
 
-func read_config() (Config, error) {
+func ReadConfig() (Config, error) {
 	usr_homedir, err := os.UserHomeDir()
 	if err != nil {
 		return Config{}, fmt.Errorf("homedir not found")

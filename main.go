@@ -2,11 +2,25 @@ package main
 
 import (
 	"fmt"
+	"os"
+
+	cfg "github.com/Ottbart/gator/internal/config"
 )
 
-func main() error {
-	config, err := cfg.read_config()
+func main() {
+	_, err := cfg.ReadConfig()
 	if err != nil {
-		return fmt.Errorf("error reading config file")
+		println("error reading config")
 	}
+	currentUser := "sascha"
+	err = cfg.SetUser(currentUser)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error setting user %s\n", currentUser)
+	}
+
+	config, err := cfg.ReadConfig()
+	if err != nil {
+		println("error reading config")
+	}
+	print(config)
 }
