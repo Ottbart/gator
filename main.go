@@ -1,26 +1,45 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"os"
 
 	cfg "github.com/Ottbart/gator/internal/config"
 )
 
+type State struct {
+	Config *cfg.Config
+}
+
 func main() {
-	_, err := cfg.ReadConfig()
+
+	read, err := cfg.ReadConfig()
 	if err != nil {
-		println("error reading config")
+		log.Fatalf("error reading config: %v", err)
+		return
 	}
-	currentUser := "sascha"
-	err = cfg.SetUser(currentUser)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error setting user %s\n", currentUser)
+	programState := &State{
+		Config: &read,
 	}
 
-	config, err := cfg.ReadConfig()
-	if err != nil {
-		println("error reading config")
+	cmds := Commands{
+		handlers: make(map[string]func(*State, Command) error),
 	}
-	print(config)
+	cmds.register("login", handlerLogin)
+
+	input := os.Args
+	if len(input) < 2 {
+		log.Fatalf("no command found")
+	} else if len(input) < 3 {
+		log.Fatalf("no arguments given")
+	} else {
+		cmd := Command{
+			name: input[1],
+			args: input[2:],
+		}
+		err := cmds.run(programState, cmd)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }

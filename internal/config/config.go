@@ -14,21 +14,25 @@ type Config struct {
 
 const configFileName = ".gatorconfig.json"
 
-func (config *Config) SetUser(user_name string) error {
-	config.CurrentUserName = user_name
-
+func WriteConfig(cfg Config) error {
 	usr_homedir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("homedir not found")
 	}
 
-	config_json, err := json.Marshal(config)
+	config_json, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
 
 	config_path := filepath.Join(usr_homedir, configFileName)
 	return os.WriteFile(config_path, config_json, 0o600)
+}
+
+func (cfg *Config) SetUser(username string) error {
+	cfg.CurrentUserName = username
+
+	return WriteConfig(*cfg)
 }
 
 func ReadConfig() (Config, error) {
