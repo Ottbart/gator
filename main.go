@@ -47,7 +47,8 @@ func main() {
 	cmds.register("register", handlerRegister)
 	cmds.register("reset", handlerDelete)
 	cmds.register("users", handlerListUsers)
-	//cmds.register("agg", handlerAgg)
+	cmds.register("agg", handlerAgg)
+	cmds.register("addfeed", handlerAddFeed)
 
 	//read inputs from the console
 	input := os.Args
