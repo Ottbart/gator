@@ -12,20 +12,12 @@ RETURNING *;
 SELECT * FROM users
 WHERE name = $1;
 
+-- name: GetUserName :one
+SELECT name from users
+WHERE id = $1;
+
 -- name: DeleteAllUsers :exec
 DELETE FROM users;
 
 -- name: ListUsers :many
 SELECT name from users;
-
--- name: CreateFeed :one
-INSERT INTO feeds (id, created_at, updated_at, name, url, user_id)
-VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    $5,
-    $6
-)
-RETURNING *;
