@@ -2,12 +2,25 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log"
+	"strconv"
 	"time"
 
 	"github.com/Ottbart/gator/internal/database"
 	"github.com/google/uuid"
 )
+
+func middlewareLoggedIn(handler func(s *State, cmd Command, user database.User) error) func(*State, Command) error {
+	return func(s *State, cmd Command) error {
+		currentUser, err := s.db.GetUser(context.Background(), s.Config.CurrentUserName)
+		if err != nil {
+			return fmt.Errorf("can't get current user from user db. Error %v", err)
+		}
+		return handler(s, cmd, currentUser)
+	}
+}
 
 func handlerRegister(s *State, cmd Command) error {
 	if len(cmd.args) != 1 {
@@ -82,16 +95,73 @@ func handlerDelete(s *State, cmd Command) error {
 }
 
 func handlerAgg(s *State, cmd Command) error {
-	feed, err := fetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
-	if err != nil {
-		return fmt.Errorf("error fetching rss data with error: %v", err)
+	if len(cmd.args) < 1 || len(cmd.args) > 2 {
+		return fmt.Errorf("usage: %v <time_between_reqs>", cmd.name)
 	}
-	fmt.Printf("Feed: %+v\n", feed)
 
+	timeBetweenRequests, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("invalid duration: %w", err)
+	}
+
+	log.Printf("Collecting feeds every %s...", timeBetweenRequests)
+
+	ticker := time.NewTicker(timeBetweenRequests)
+
+	for ; ; <-ticker.C {
+		err = scrapeFeeds(s)
+		if err != nil {
+			return fmt.Errorf("error scraping feeds. Error: %v", err)
+		}
+	}
+}
+
+func scrapeFeeds(s *State) error {
+	feed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return fmt.Errorf("can't get list of feeds to fetch from database. Error: %v", err)
+	}
+	fmt.Println("Found a feed to fetch!")
+
+	s.db.MarkFeedFetched(context.Background(), feed.ID)
+
+	feedData, err := fetchFeed(context.Background(), feed.Url)
+	if err != nil {
+		return fmt.Errorf("can't fetch feed. Error %v", err)
+	}
+	fmt.Printf("writing all posts from '%v' to the database", feedData.Channel.Title)
+
+	for _, item := range feedData.Channel.Item {
+		publishedAt := sql.NullTime{}
+		if t, err := time.Parse(time.RFC1123Z, item.PubDate); err == nil {
+			publishedAt = sql.NullTime{
+				Time:  t,
+				Valid: true,
+			}
+		}
+		params := database.CreatePostParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			FeedID:    feed.ID,
+			Title:     item.Title,
+			Url:       item.Link,
+			Description: sql.NullString{
+				String: item.Description,
+				Valid:  true,
+			},
+			PublishedAt: publishedAt,
+		}
+
+		_, err := s.db.CreatePost(context.Background(), params)
+		if err != nil {
+			return fmt.Errorf("error writing post to database. Error: %v", err)
+		}
+	}
 	return nil
 }
 
-func handlerAddFeed(s *State, cmd Command) error {
+func handlerAddFeed(s *State, cmd Command, user database.User) error {
 
 	input := cmd.args
 
@@ -101,11 +171,7 @@ func handlerAddFeed(s *State, cmd Command) error {
 	feedName := input[0]
 	feedUrl := input[1]
 
-	currentUser, err := s.db.GetUser(context.Background(), s.Config.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("can't get current user from user db")
-	}
-	currentUserID := currentUser.ID
+	currentUserID := user.ID
 
 	feedParams := database.CreateFeedParams{
 		ID:        uuid.New(),
@@ -148,7 +214,7 @@ func handlerListFeeds(s *State, cmd Command) error {
 	return nil
 }
 
-func handlerFollow(s *State, cmd Command) error {
+func handlerFollow(s *State, cmd Command, user database.User) error {
 	input := cmd.args
 	if len(input) < 1 {
 		return fmt.Errorf("not enough arguments. Use with 'follow <url>'")
@@ -161,31 +227,21 @@ func handlerFollow(s *State, cmd Command) error {
 		return fmt.Errorf("Can't get feed id. Please check provided URL. Error: %v", err)
 	}
 
-	// get user userID from current username
-	currentUser, err := s.db.GetUser(context.Background(), s.Config.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("Can't get current user from user db. Error: %v", err)
-	}
+	err = helperFeedFollow(s, user.ID, getFeed.ID)
 
-	err = helperFeedFollow(s, currentUser.ID, getFeed.ID)
-
-	fmt.Printf("%v is now following %v", s.Config.CurrentUserName, getFeed.Name)
+	fmt.Printf("%v is now following %v", user.Name, getFeed.Name)
 
 	return nil
 }
 
-func handlerFollowing(s *State, cmd Command) error {
-	// get user userID from current username
-	currentUser, err := s.db.GetUser(context.Background(), s.Config.CurrentUserName)
+func handlerFollowing(s *State, cmd Command, user database.User) error {
+	//fetch feeds for user
+	sliceOfFeeds, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
 	if err != nil {
-		return fmt.Errorf("Can't get current user from user db. Error: %v", err)
+		return fmt.Errorf("Can't get feeds for user %v. Error: %v", user.Name, err)
 	}
-	fmt.Printf(" User %v is following:\n", currentUser.Name)
 
-	sliceOfFeeds, err := s.db.GetFeedFollowsForUser(context.Background(), currentUser.ID)
-	if err != nil {
-		return fmt.Errorf("Can't get feeds for user %v. Error: %v", currentUser.Name, err)
-	}
+	fmt.Printf(" User %v is following:\n", user.Name)
 
 	for _, feed := range sliceOfFeeds {
 		feed_follow, err := s.db.GetFeedFromId(context.Background(), feed.FeedID)
@@ -211,5 +267,54 @@ func helperFeedFollow(s *State, userId, feedId uuid.UUID) error {
 		return fmt.Errorf("Can't create feed  follow. Error: %v", err)
 	}
 
+	return nil
+}
+
+func handlerUnfollow(s *State, cmd Command, user database.User) error {
+	input := cmd.args
+	if len(input) < 1 {
+		return fmt.Errorf("No arguments given. Use with 'unfollow <url>'")
+	}
+	url := input[0]
+	feed, err := s.db.GetFeedFromUrl(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("couldn't get feedID from url %v\nError: %v", url, err)
+	}
+
+	params := database.DeleteFeedFollowsParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	}
+	err = s.db.DeleteFeedFollows(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("Couldn't delete FeedFollows record. Error: %v", err)
+	}
+
+	return nil
+}
+
+func handlerBrowse(s *State, cmd Command, user database.User) error {
+	input := cmd.args
+	limit := 2
+	if len(input) > 0 {
+		parsedLimit, err := strconv.Atoi(input[0])
+		if err != nil {
+			return fmt.Errorf("Invalid limit argument. Error: %v", err)
+		} else {
+			limit = parsedLimit
+		}
+	}
+	params := database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  int32(limit),
+	}
+	posts, err := s.db.GetPostsForUser(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error getting posts for user. Error: %v", err)
+	}
+	fmt.Printf("found %v posts for user %v\n", len(posts), user.Name)
+	for _, post := range posts {
+		fmt.Printf("Title: %v\n", post.Title)
+	}
 	return nil
 }
